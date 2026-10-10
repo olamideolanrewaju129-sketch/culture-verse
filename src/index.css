@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+@theme {
+  --color-forest: #163D32;
+  --color-forest-dark: #0F2A22;
+  --color-forest-light: #1E5042;
+  --color-gold: #D6A84F;
+  --color-gold-light: #E8C378;
+  --color-gold-dark: #B88B35;
+  --color-ivory: #FAF7F0;
+  --color-terracotta: #B85C38;
+  --color-terracotta-light: #D4744E;
+  --color-charcoal: #252923;
+  --color-charcoal-muted: #575D54;
+  --color-sage: #E5EDE5;
+  --color-border-grey: #E7E5DF;
+
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --font-serif: 'Lora', Georgia, serif;
+}
+
+:root {
+  --primary-forest: #163D32;
+  --heritage-gold: #D6A84F;
+  --warm-ivory: #FAF7F0;
+  --terracotta: #B85C38;
+  --charcoal: #252923;
+  --muted-sage: #E5EDE5;
+  --border-grey: #E7E5DF;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #FAF7F0;
+  color: #252923;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, .font-editorial {
+  font-family: var(--font-serif);
+}
+
+/* Custom delicate African geometric border accents */
+.african-pattern-subtle {
+  background-image: radial-gradient(#D6A84F 0.75px, transparent 0.75px), radial-gradient(#163D32 0.75px, #FAF7F0 0.75px);
+  background-size: 30px 30px;
+  background-position: 0 0, 15px 15px;
+  opacity: 0.08;
+}
+
+.cultural-gradient-forest {
+  background: linear-gradient(135deg, #163D32 0%, #0F2A22 100%);
+}
+
+.cultural-gradient-gold {
+  background: linear-gradient(135deg, #D6A84F 0%, #B88B35 100%);
+}
+
+.cultural-card {
+  background: #FFFFFF;
+  border: 1px solid #E7E5DF;
+  border-radius: 1rem;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.cultural-card:hover {
+  border-color: #D6A84F;
+  transform: translateY(-2px);
+  box-shadow: 0 12px 32px -4px rgba(22, 61, 50, 0.08);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #FAF7F0;
+}
+::-webkit-scrollbar-thumb {
+  background: #E7E5DF;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #D6A84F;
+}
