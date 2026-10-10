@@ -1,29 +1,46 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { optionalAuth, AuthRequest } from '../middleware/auth.js';
+import { askGemma } from '../services/gemmaService.js';
 
 const router = Router();
 
-// Ask Your Roots endpoint
+// POST /api/ai/ask - Ask Your Roots Gemma AI Assistant
 router.post('/ask', optionalAuth, async (req: AuthRequest, res) => {
   const { question, culture } = req.body;
 
+  // 1. Validation
   if (!question || typeof question !== 'string' || question.trim() === '') {
-    return res.status(400).json({ error: 'Please provide a cultural question to explore.' });
+    return res.status(400).json({ error: 'Please provide a valid cultural question to explore.' });
   }
 
-  const queryTerms = question
+  const validCultures = ['yoruba', 'igbo', 'hausa', 'all'];
+  if (culture && !validCultures.includes(culture.toLowerCase())) {
+    // If culture is not recognised, check if it matches a culture ID or return error
+    const cultureExists = db.prepare('SELECT id FROM cultures WHERE slug = ? OR id = ?').get(culture, culture);
+    if (!cultureExists) {
+      return res.status(400).json({
+        error: `Unsupported culture: "${culture}". Supported learning traditions are Yoruba, Igbo, and Hausa.`,
+      });
+    }
+  }
+
+  const cleanQuestion = question.trim();
+
+  // 2. Retrieve relevant published cultural resources from database for grounding
+  const queryTerms = cleanQuestion
     .toLowerCase()
     .replace(/[^\w\s]/g, '')
     .split(/\s+/)
     .filter((w: string) => w.length > 2);
 
-  // 1. Retrieve relevant cultural library resources for grounding
   let searchCondition = '';
   const searchParams: any[] = [];
 
   if (queryTerms.length > 0) {
-    const likeClauses = queryTerms.map(() => `(LOWER(cr.title) LIKE ? OR LOWER(cr.summary) LIKE ? OR LOWER(cr.content) LIKE ?)`).join(' OR ');
+    const likeClauses = queryTerms
+      .map(() => `(LOWER(cr.title) LIKE ? OR LOWER(cr.summary) LIKE ? OR LOWER(cr.content) LIKE ?)`)
+      .join(' OR ');
     searchCondition = ` AND (${likeClauses})`;
     for (const term of queryTerms) {
       const p = `%${term}%`;
@@ -41,22 +58,22 @@ router.post('/ask', optionalAuth, async (req: AuthRequest, res) => {
     WHERE cr.status = 'published'
   `;
 
-  if (culture && culture !== 'all') {
+  if (culture && culture.toLowerCase() !== 'all') {
     sql += ` AND (c.slug = ? OR c.id = ?)`;
-    searchParams.unshift(culture, culture);
+    searchParams.unshift(culture.toLowerCase(), culture.toLowerCase());
   }
 
   sql += searchCondition;
-  sql += ` LIMIT 4`;
+  sql += ` LIMIT 5`;
 
   let matchedResources: any[] = [];
   try {
     matchedResources = db.prepare(sql).all(...searchParams);
   } catch (err) {
-    console.error('AI search grounding error:', err);
+    console.error('[AI] Grounding retrieval error:', err);
   }
 
-  // If specific search had zero matches, get top 3 related culture resources
+  // If specific keyword search yielded no matches, fetch general resources from the culture
   if (matchedResources.length === 0) {
     let fallbackSql = `
       SELECT cr.id, cr.title, cr.slug, cr.summary, cr.content, cr.content_type,
@@ -68,101 +85,81 @@ router.post('/ask', optionalAuth, async (req: AuthRequest, res) => {
       WHERE cr.status = 'published'
     `;
     const fallbackParams: any[] = [];
-    if (culture && culture !== 'all') {
+    if (culture && culture.toLowerCase() !== 'all') {
       fallbackSql += ` AND (c.slug = ? OR c.id = ?)`;
-      fallbackParams.push(culture, culture);
+      fallbackParams.push(culture.toLowerCase(), culture.toLowerCase());
     }
     fallbackSql += ` LIMIT 3`;
-    matchedResources = db.prepare(fallbackSql).all(...fallbackParams);
-  }
-
-  // Check for configured Gemma or Gemini API credentials
-  const gemmaApiKey = process.env.GEMMA_API_KEY || process.env.GEMINI_API_KEY;
-  const gemmaEndpoint = process.env.GEMMA_ENDPOINT;
-
-  const libraryContext = matchedResources
-    .map(
-      r => `Source: "${r.title}" (${r.culture_name} - ${r.category_name})\nSummary: ${r.summary}\nKey Content Excerpt: ${r.content.substring(0, 500)}...`
-    )
-    .join('\n\n');
-
-  // If live Gemma endpoint or Gemini API is configured:
-  if (gemmaApiKey || gemmaEndpoint) {
     try {
-      const endpoint = gemmaEndpoint || `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${gemmaApiKey}`;
-      
-      const systemInstruction = `You are "Ask Your Roots", an AI African cultural learning and preservation assistant on CultureVerse.
-Provide respectful, accurate, educational answers grounded in African cultural traditions (Yoruba, Igbo, Hausa).
-Adhere strictly to these principles:
-- Ground your answer in the provided Cultural Library sources where relevant.
-- Clearly distinguish between oral traditions, documented historical records, linguistic conventions, and religious beliefs.
-- Never invent historical facts, fake citations, or fake quotations from elders.
-- If the knowledge is incomplete or regionally variable, honestly acknowledge that practices vary across communities.`;
-
-      const promptText = `${systemInstruction}\n\nCultural Library Context:\n${libraryContext}\n\nUser Question: ${question}\n\nPlease provide an educational, respectful, well-structured answer:`;
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: promptText }] }],
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const generatedAnswer =
-          data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-          'Thank you for your question. Here is the relevant cultural information preserved in our library.';
-
-        return res.json({
-          status: 'success',
-          provider: 'gemma_inference_live',
-          answer: generatedAnswer,
-          sources: matchedResources.map(r => ({
-            id: r.id,
-            title: r.title,
-            slug: r.slug,
-            culture_name: r.culture_name,
-            category_name: r.category_name,
-            summary: r.summary,
-          })),
-        });
-      }
-    } catch (apiErr: any) {
-      console.warn('[AI] External inference call failed, switching to grounded library provider:', apiErr?.message);
+      matchedResources = db.prepare(fallbackSql).all(...fallbackParams);
+    } catch (err) {
+      console.error('[AI] Fallback retrieval error:', err);
     }
   }
 
-  // Graceful grounded library assistant mode (Transparently truthful about model connection):
-  // Generate a faithful, grounded response based directly on the authentic cultural resources in the database
-  let groundedAnswer = '';
-  if (matchedResources.length > 0) {
-    groundedAnswer = `Based on the curated records in the CultureVerse Cultural Library:\n\n`;
-    for (const resItem of matchedResources) {
-      groundedAnswer += `**${resItem.title}** (${resItem.culture_name})\n${resItem.summary}\n\n`;
-    }
-    groundedAnswer += `*Note on Regional Variation:* Practices and oral accounts often vary across individual families, towns, and historical eras. Explore the linked sources below for detailed historical and anthropological context.`;
-  } else {
-    groundedAnswer = `The CultureVerse library currently has limited verified documentation matching your query: "${question}".\n\nBecause CultureVerse preserves authentic heritage and does not fabricate historical claims, we encourage you or a knowledgeable community elder to submit an oral history or suggest this topic in our Knowledge Gaps registry!`;
+  // Format cultural context for Gemma
+  const culturalContext = matchedResources.length > 0
+    ? matchedResources
+        .map(
+          (r, idx) =>
+            `[Resource ${idx + 1}] Title: "${r.title}" (Culture: ${r.culture_name}, Category: ${r.category_name}, Format: ${r.content_type})
+Summary: ${r.summary}
+Archival Details: ${r.content.substring(0, 800)}`
+        )
+        .join('\n\n')
+    : 'No directly matching published resources found in the CultureVerse database for this query.';
+
+  // Format standard sources list
+  const sources = matchedResources.map(r => ({
+    title: r.title,
+    resourceId: r.id,
+    id: r.id,
+    slug: r.slug,
+    culture_name: r.culture_name,
+    category_name: r.category_name,
+    summary: r.summary,
+  }));
+
+  // 3. Check API key presence
+  const apiKey = process.env.GEMINI_API_KEY || process.env.CultureVerse_API_Key || process.env.GEMMA_API_KEY;
+  if (!apiKey) {
+    return res.status(503).json({
+      error: 'GEMINI_API_KEY is not configured on the server.',
+      status: 'missing_credentials',
+      answer: matchedResources.length > 0
+        ? `*Server Note: GEMINI_API_KEY is not configured. Direct database library excerpts:*\n\n` +
+          matchedResources.map(r => `**${r.title}** (${r.culture_name}): ${r.summary}`).join('\n\n')
+        : 'Cultural database documentation unavailable.',
+      sources,
+    });
   }
 
-  return res.json({
-    status: 'grounded_library_mode',
-    provider: gemmaApiKey ? 'gemma_fallback' : 'unconfigured_gemma_model',
-    model_status_note: !gemmaApiKey
-      ? 'Live Gemma inference API key (GEMMA_API_KEY) is not currently configured in the environment. Responses are grounded directly on authentic CultureVerse database library archives.'
-      : 'Gemma endpoint connection error; serving verified library documentation directly.',
-    answer: groundedAnswer,
-    sources: matchedResources.map(r => ({
-      id: r.id,
-      title: r.title,
-      slug: r.slug,
-      culture_name: r.culture_name,
-      category_name: r.category_name,
-      summary: r.summary,
-    })),
-  });
+  // 4. Pass to askGemma
+  try {
+    const answer = await askGemma(cleanQuestion, culturalContext);
+
+    return res.json({
+      status: 'success',
+      model: process.env.GEMMA_MODEL ?? 'gemma-4-26b-a4b-it',
+      answer,
+      sources,
+    });
+  } catch (aiErr: any) {
+    console.error('[AI] Gemma execution error:', aiErr?.message || aiErr);
+    
+    // Transparently handle AI provider errors without fabricating fake AI answers
+    const errorMessage = aiErr?.message || 'Error communicating with Gemma AI service.';
+    return res.status(502).json({
+      status: 'provider_error',
+      error: `AI provider error: ${errorMessage}`,
+      model: process.env.GEMMA_MODEL ?? 'gemma-4-26b-a4b-it',
+      answer: matchedResources.length > 0
+        ? `Gemma AI service encountered a temporary provider issue. However, here is verified documentation retrieved directly from the CultureVerse archive for your question:\n\n` +
+          matchedResources.map(r => `**${r.title}** (${r.culture_name}): ${r.summary}`).join('\n\n')
+        : 'The AI provider is temporarily unavailable and no matching archive records were found for this query.',
+      sources,
+    });
+  }
 });
 
 export default router;
